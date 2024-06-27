@@ -20,7 +20,6 @@ use snarkvm::{
 };
 use std::collections::VecDeque;
 use std::{
-    any::Any,
     io,
     str::FromStr,
     sync::{
@@ -86,10 +85,10 @@ struct Worker {
     pub custom_name: String,
     /// Specify the parallel number of process to solve coinbase_puzzle
     #[structopt(default_value = "2", long = "parallel_num")]
-    pub parallel_num: u8,
-    /// Specify the threads per coinbase_puzzle solve process, defalut:16
-    #[structopt(default_value = "16", long = "threads")]
-    pub threads: u8,
+    pub parallel_num: u16,
+    // /// Specify the threads per coinbase_puzzle solve process, defalut:16
+    // #[structopt(default_value = "16", long = "threads")]
+    // pub threads: u8,
 }
 
 impl Worker {
@@ -135,30 +134,30 @@ impl Worker {
     ) -> Result<()> {
         let (router, handler) = oneshot::channel();
         let parallel_num = self.parallel_num;
-        let mut thread_pools = Vec::new();
-        for _ in 0..parallel_num {
-            let rayon_panic_handler = move |err: Box<dyn Any + Send>| {
-                error!("{:?} - just skip", err);
-            };
-            thread_pools.push(Arc::new(
-                rayon::ThreadPoolBuilder::new()
-                    .stack_size(8 * 1024 * 1024)
-                    .num_threads(self.threads.into())
-                    .panic_handler(rayon_panic_handler)
-                    .build()
-                    .expect("Failed to initialize a thread pool for worker using cpu"),
-            ));
-        }
-        #[cfg(feature = "cuda")]
-        info!(
-            "Created {} prover thread pools and using cuda",
-            thread_pools.len(),
-        );
-        #[cfg(not(feature = "cuda"))]
-        info!(
-            "Created {} prover thread pools and using cpu",
-            thread_pools.len(),
-        );
+        // let mut thread_pools = Vec::new();
+        // for _ in 0..parallel_num {
+        //     let rayon_panic_handler = move |err: Box<dyn Any + Send>| {
+        //         error!("{:?} - just skip", err);
+        //     };
+        //     thread_pools.push(Arc::new(
+        //         rayon::ThreadPoolBuilder::new()
+        //             .stack_size(8 * 1024 * 1024)
+        //             .num_threads(self.threads.into())
+        //             .panic_handler(rayon_panic_handler)
+        //             .build()
+        //             .expect("Failed to initialize a thread pool for worker using cpu"),
+        //     ));
+        // }
+        // #[cfg(feature = "cuda")]
+        // info!(
+        //     "Created {} prover thread pools and using cuda",
+        //     thread_pools.len(),
+        // );
+        // #[cfg(not(feature = "cuda"))]
+        // info!(
+        //     "Created {} prover thread pools and using cpu",
+        //     thread_pools.len(),
+        // );
         let total_solutions = Arc::new(AtomicU32::new(0));
         let total_solutions_get = total_solutions.clone();
         let is_working = Arc::new(AtomicBool::new(false));
@@ -190,73 +189,74 @@ impl Worker {
                                 tokio::time::sleep(Duration::from_millis(5)).await;
                             }
 
-                            for i in 0..thread_pools.len() {
+                            for i in 0..parallel_num {
                                 let net_router = net_router.clone();
                                 let epoch_hash = epoch_hash.clone();
-                                let thread_pool = thread_pools[i as usize].clone();
+                                // let thread_pool = thread_pools[i as usize].clone();
                                 let total_solutions_get = total_solutions_get.clone();
                                 let puzzle = puzzle.clone();
                                 let in_process_count = in_process_count.clone();
                                 let terminator = terminator.clone();
-                                debug!("thread pool id {}", i);
+                                // debug!("thread pool id {}", i);
                                 let (router, handler) = oneshot::channel();
 
                                 std::thread::spawn(move || {
                                     let _ = router.send(());
                                     in_process_count.fetch_add(1, Ordering::SeqCst);
-                                    thread_pool.install(move || {
-                                        loop {
-                                            trace!("Do puzzle,  (Epoch {}, Job Id {}, Target {})",
-                                            epoch_hash, job_id, target,);
+                                    // thread_pool.install(move || {
 
-                                            if terminator.load(Ordering::SeqCst) {
-                                                debug!("job_id({job_id}) process({i}) exit.");
-                                                in_process_count.fetch_sub(1, Ordering::SeqCst);
-                                                break;
-                                            }
+                                    // });
+                                    loop {
+                                        trace!("Do puzzle,  (Epoch {}, Job Id {}, Target {})",
+                                        epoch_hash, job_id, target,);
 
-                                            // Construct a prover solution.
-                                            let solution = match puzzle.prove(
-                                                epoch_hash,
-                                                pool_address,
-                                                rand::thread_rng().gen(),
-                                                Some(target),
-                                            ) {
-                                                Ok(solution) => solution,
-                                                Err(error) => {
-                                                    trace!("Failed to generate prover solution: {error}");
-                                                    total_solutions_get.fetch_add(1, Ordering::SeqCst);
-                                                    continue;
-                                                }
-                                            };
-                                            // Fetch the prover solution target.
-                                            let solution_target = match puzzle.get_proof_target(&solution) {
-                                                Ok(target) => target,
-                                                Err(error) => {
-                                                    warn!("Failed to fetch prover solution target: {error}");
-                                                    total_solutions_get.fetch_add(1, Ordering::SeqCst);
-                                                    continue;
-                                                }
-                                            };
-
-                                            // Ensure that the prover solution target is sufficient.
-                                            match solution_target >= target {
-                                                true => {
-                                                    info!("job_id({job_id}) Found a Solution (Proof Target {}, Target {})",solution_target, target);
-                                                    // Send solution to the pool server.
-                                                    let message = NetRequest::Submit(job_id, Data::Object(solution));
-                                                    if let Err(error) = futures::executor::block_on(net_router.send(message)) {
-                                                        error!("[Submit to Pool Server] {}", error);
-                                                    }
-                                                }
-                                                false => trace!(
-                                                    "Prover solution was below the necessary proof target ({solution_target} < {target})"
-                                                ),
-                                            }
-                                            // fetch_add every solution
-                                            total_solutions_get.fetch_add(1, Ordering::SeqCst);
+                                        if terminator.load(Ordering::SeqCst) {
+                                            debug!("job_id({job_id}) process({i}) exit.");
+                                            in_process_count.fetch_sub(1, Ordering::SeqCst);
+                                            break;
                                         }
-                                    });
+
+                                        // Construct a prover solution.
+                                        let solution = match puzzle.prove(
+                                            epoch_hash,
+                                            pool_address,
+                                            rand::thread_rng().gen(),
+                                            Some(target),
+                                        ) {
+                                            Ok(solution) => solution,
+                                            Err(error) => {
+                                                trace!("Failed to generate prover solution: {error}");
+                                                total_solutions_get.fetch_add(1, Ordering::SeqCst);
+                                                continue;
+                                            }
+                                        };
+                                        // Fetch the prover solution target.
+                                        let solution_target = match puzzle.get_proof_target(&solution) {
+                                            Ok(target) => target,
+                                            Err(error) => {
+                                                warn!("Failed to fetch prover solution target: {error}");
+                                                total_solutions_get.fetch_add(1, Ordering::SeqCst);
+                                                continue;
+                                            }
+                                        };
+
+                                        // Ensure that the prover solution target is sufficient.
+                                        match solution_target >= target {
+                                            true => {
+                                                info!("job_id({job_id}) Found a Solution (Proof Target {}, Target {})",solution_target, target);
+                                                // Send solution to the pool server.
+                                                let message = NetRequest::Submit(job_id, Data::Object(solution));
+                                                if let Err(error) = futures::executor::block_on(net_router.send(message)) {
+                                                    error!("[Submit to Pool Server] {}", error);
+                                                }
+                                            }
+                                            false => trace!(
+                                                "Prover solution was below the necessary proof target ({solution_target} < {target})"
+                                            ),
+                                        }
+                                        // fetch_add every solution
+                                        total_solutions_get.fetch_add(1, Ordering::SeqCst);
+                                    }
                                 });
                                 let _ = handler.await;
                             }
